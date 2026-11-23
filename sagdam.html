@@ -1,0 +1,290 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>필요한 열 추출기</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700&display=swap">
+<style>
+  :root {
+    --bg: #f2f5f3;
+    --surface: #ffffff;
+    --ink: #1b2321;
+    --muted: #5b6965;
+    --line: #d8dfdb;
+    --accent: #1f6f5c;
+    --accent-ink: #ffffff;
+    --soft: #e7efec;
+    --err: #b3261e;
+    --font-body: "Noto Sans KR", system-ui, -apple-system, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #111715; --surface: #192220; --ink: #e5ece9; --muted: #9aa8a3;
+      --line: #2b3733; --accent: #5fc2a6; --accent-ink: #08201a; --soft: #22302c; --err: #ff8f86;
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #111715; --surface: #192220; --ink: #e5ece9; --muted: #9aa8a3;
+    --line: #2b3733; --accent: #5fc2a6; --accent-ink: #08201a; --soft: #22302c; --err: #ff8f86;
+    color-scheme: dark;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--font-body);
+    font-size: 15px;
+    line-height: 1.6;
+  }
+  .wrap {
+    max-width: 1080px;
+    margin: 0 auto;
+    padding-block: 32px 48px;
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+  }
+  .nav { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 20px; }
+  .nav a { display: inline-block; padding: 8px 16px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--ink); text-decoration: none; font-weight: 500; }
+  .nav a:hover { background: var(--soft); }
+  .nav a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .nav a[aria-current="page"] { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+
+  h1 { font-size: 1.5rem; line-height: 1.3; margin: 0 0 4px; font-weight: 700; text-wrap: balance; }
+  .lead { margin: 0 0 24px; color: var(--muted); }
+  .grid { display: grid; grid-template-columns: minmax(0, 340px) minmax(0, 1fr); gap: 20px; align-items: start; }
+  @media (max-width: 760px) { .grid { grid-template-columns: minmax(0, 1fr); } }
+
+  .panel { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 20px; min-width: 0; }
+  .field { display: flex; flex-direction: column; gap: 6px; }
+  .lbl { font-size: 0.8125rem; font-weight: 500; color: var(--muted); }
+
+  .drop {
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px;
+    min-height: 112px; padding: 16px; text-align: center; cursor: pointer;
+    border: 1.5px dashed var(--line); border-radius: 8px; background: var(--bg);
+    transition: border-color .15s, background .15s;
+  }
+  .drop:hover, .drop.over { border-color: var(--accent); background: var(--soft); }
+  .drop:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .drop input { position: absolute; width: 1px; height: 1px; opacity: 0; overflow: hidden; }
+  .drop .name { font-weight: 500; overflow-wrap: anywhere; }
+  .drop .hint { font-size: 0.8125rem; color: var(--muted); }
+
+  button {
+    font: inherit; font-weight: 500; cursor: pointer; border-radius: 6px; padding: 10px 14px;
+    border: 1px solid var(--accent); background: var(--accent); color: var(--accent-ink);
+  }
+  button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button.ghost { background: transparent; color: var(--accent); }
+  button.ghost:hover:not(:disabled) { background: var(--soft); }
+  .run { width: 100%; margin-top: 20px; }
+
+  .status { min-height: 1.6em; margin: 12px 0 0; font-size: 0.875rem; color: var(--muted); }
+  .status.err { color: var(--err); font-weight: 500; }
+
+  .res-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+  .summary { font-size: 0.875rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .summary b { color: var(--ink); font-weight: 700; }
+  .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+  .tablebox { max-height: 620px; overflow: auto; border: 1px solid var(--line); border-radius: 6px; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.875rem; font-variant-numeric: tabular-nums; }
+  th, td { padding: 8px 12px; text-align: left; border-bottom: 1px solid var(--line); vertical-align: top; }
+  thead th { position: sticky; top: 0; background: var(--soft); color: var(--muted); font-size: 0.75rem; font-weight: 500; letter-spacing: .02em; z-index: 1; }
+  tbody tr:last-child td { border-bottom: 0; }
+  tbody tr:hover td { background: var(--bg); }
+  td.n, th.n { width: 3.5rem; color: var(--muted); text-align: center; }
+  td.addr { min-width: 14rem; }
+  td.empty { padding: 36px 12px; text-align: center; color: var(--muted); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <nav class="nav" aria-label="페이지 이동">
+    <a href="https://suuurini.github.io/sagdam/" aria-current="page">사그담</a>
+    <a href="https://suuurini.github.io/naver/">네이버</a>
+  </nav>
+  <h1>필요한 열 추출기</h1>
+  <p class="lead">엑셀 파일에서 B, D, F, G, I열만 뽑아 표로 보여주고, 텍스트 복사나 엑셀 다운로드로 가져갈 수 있습니다.</p>
+
+  <div class="grid">
+    <section class="panel" aria-label="파일 입력">
+      <div class="field">
+        <span class="lbl">엑셀 파일</span>
+        <label class="drop" id="drop">
+          <input type="file" id="excelFile" accept=".xlsx,.xls">
+          <span class="name" id="fname">파일을 끌어다 놓거나 눌러서 선택</span>
+          <span class="hint" id="fhint">.xlsx, .xls</span>
+        </label>
+      </div>
+      <button class="run" id="run" disabled>데이터 추출하기</button>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+    </section>
+
+    <section class="panel" aria-label="추출 결과">
+      <div class="res-head">
+        <div class="summary" id="summary">파일을 선택하면 결과가 여기에 표시됩니다</div>
+        <div class="actions">
+          <button class="ghost" id="copy" disabled>텍스트 복사</button>
+          <button id="download" disabled>엑셀 다운로드</button>
+        </div>
+      </div>
+      <div class="tablebox">
+        <table>
+          <thead>
+            <tr><th class="n">행</th><th>B열</th><th>G열</th><th>I열</th><th>D열</th><th>F열</th></tr>
+          </thead>
+          <tbody id="tableBody">
+            <tr><td class="empty" colspan="6">엑셀 파일을 선택하면 이 자리에 표가 나옵니다.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script>
+(function () {
+  const $ = (id) => document.getElementById(id);
+  // 추출 대상 열 (A=0, B=1, ... I=8)
+  const TARGET_COLS = [
+    { letter: 'B', index: 1 },
+    { letter: 'D', index: 3 },
+    { letter: 'F', index: 5 },
+    { letter: 'G', index: 6 },
+    { letter: 'I', index: 8 }
+  ];
+  let file = null;
+  let extractedData = [];
+
+  const status = (msg, err) => { const s = $('status'); s.textContent = msg || ''; s.classList.toggle('err', !!err); };
+
+  function setFile(f) {
+    if (!f) return;
+    file = f;
+    $('fname').textContent = f.name;
+    $('fhint').textContent = '다른 파일을 끌어다 놓거나 눌러서 바꾸기';
+    $('run').disabled = false;
+    extractColumns();
+  }
+
+  function cell(tr, text, cls) {
+    const td = document.createElement('td');
+    td.textContent = text;
+    if (cls) td.className = cls;
+    tr.appendChild(td);
+  }
+
+  function extractColumns() {
+    if (!file) { status('엑셀 파일을 선택해 주세요.', true); return; }
+    status('파일을 읽는 중…');
+    const reader = new FileReader();
+    reader.onerror = () => status('파일을 읽지 못했습니다.', true);
+    reader.onload = (e) => {
+      try {
+        const workbook = XLSX.read(new Uint8Array(e.target.result), { type: 'array' });
+        const worksheet = workbook.Sheets[workbook.SheetNames[0]];
+        const range = XLSX.utils.decode_range(worksheet['!ref'] || 'A1');
+
+        extractedData = [];
+        for (let R = range.s.r; R <= range.e.r; ++R) {
+          const rowObj = { rowNum: R + 1 };
+          let hasData = false;
+          TARGET_COLS.forEach((col) => {
+            const c = worksheet[XLSX.utils.encode_cell({ r: R, c: col.index })];
+            const val = c ? (c.w || c.v || '').toString().trim() : '';
+            rowObj[col.letter] = val;
+            if (val !== '') hasData = true;
+          });
+          if (hasData) extractedData.push(rowObj);
+        }
+        render();
+      } catch (err) {
+        extractedData = [];
+        render();
+        status('엑셀 파일을 읽지 못했습니다. 비밀번호가 걸려 있거나 손상된 파일일 수 있습니다.', true);
+      }
+    };
+    reader.readAsArrayBuffer(file);
+  }
+
+  function render() {
+    const body = $('tableBody');
+    body.textContent = '';
+    if (!extractedData.length) {
+      const tr = document.createElement('tr');
+      const td = document.createElement('td');
+      td.className = 'empty'; td.colSpan = 6; td.textContent = '추출할 데이터가 없습니다.';
+      tr.appendChild(td); body.appendChild(tr);
+      $('summary').textContent = '추출된 행이 없습니다';
+      $('copy').disabled = true; $('download').disabled = true;
+      status('');
+      return;
+    }
+    for (const row of extractedData) {
+      const tr = document.createElement('tr');
+      cell(tr, row.rowNum, 'n');
+      cell(tr, row.B);
+      cell(tr, row.G);
+      cell(tr, row.I, 'addr');
+      cell(tr, row.D);
+      cell(tr, row.F + '개');
+      body.appendChild(tr);
+    }
+    $('summary').innerHTML = '총 <b>' + extractedData.length + '</b>행 추출됨';
+    $('copy').disabled = false; $('download').disabled = false;
+    status('완료했습니다.');
+  }
+
+  // 탭 구분 텍스트 (첫 행은 제목 행이라 제외)
+  function buildText() {
+    let t = '';
+    extractedData.forEach((row) => {
+      if (row.rowNum > 1) t += row.B + '\t' + row.G + '\n' + row.I + '\n' + row.D + '\t' + row.F + '개\n\n';
+    });
+    return t;
+  }
+
+  async function copyText() {
+    const text = buildText();
+    if (!text) { status('복사할 데이터가 없습니다.', true); return; }
+    try {
+      await navigator.clipboard.writeText(text);
+      const b = $('copy'); b.textContent = '복사했습니다';
+      setTimeout(() => (b.textContent = '텍스트 복사'), 1600);
+      status('복사했습니다. 엑셀이나 메모장에 바로 붙여넣을 수 있습니다.');
+    } catch (e) {
+      status('복사가 막혀 있습니다. 브라우저의 클립보드 권한을 확인해 주세요.', true);
+    }
+  }
+
+  function downloadExcel() {
+    if (!extractedData.length) { status('다운로드할 데이터가 없습니다.', true); return; }
+    const rows = extractedData.map((r) => ({ 'B열': r.B, 'G열': r.G, 'I열': r.I, 'D열': r.D, 'F열': r.F }));
+    const ws = XLSX.utils.json_to_sheet(rows);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, '추출결과');
+    XLSX.writeFile(wb, '추출결과.xlsx');
+  }
+
+  $('excelFile').addEventListener('change', (e) => setFile(e.target.files[0]));
+  const drop = $('drop');
+  ['dragenter', 'dragover'].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add('over'); }));
+  ['dragleave', 'drop'].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove('over'); }));
+  drop.addEventListener('drop', (e) => setFile(e.dataTransfer.files[0]));
+  $('run').addEventListener('click', extractColumns);
+  $('copy').addEventListener('click', copyText);
+  $('download').addEventListener('click', downloadExcel);
+})();
+</script>
+</body>
+</html>
