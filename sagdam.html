@@ -109,8 +109,8 @@
 <body>
 <div class="wrap">
   <nav class="nav" aria-label="페이지 이동">
-    <a href="https://suuurini.github.io/naver/">네이버</a>
-    <a href="https://suuurini.github.io/naver/sagdam.html" aria-current="page">사그담</a>
+    <a href="naver.html">네이버</a>
+    <a href="sagdam.html" aria-current="page">사그담</a>
   </nav>
   <h1>필요한 열 추출기</h1>
   <p class="lead">엑셀 파일에서 B, D, F, G, I열만 뽑아 표로 보여주고, 텍스트 복사나 엑셀 다운로드로 가져갈 수 있습니다.</p>
@@ -140,10 +140,10 @@
       <div class="tablebox">
         <table>
           <thead>
-            <tr><th class="n">행</th><th>B열</th><th>G열</th><th>I열</th><th>D열</th><th>F열</th></tr>
+            <tr><th class="n">행</th><th>B열</th><th>G열</th><th>I열</th><th>배송메세지</th><th>D열</th><th>F열</th></tr>
           </thead>
           <tbody id="tableBody">
-            <tr><td class="empty" colspan="6">엑셀 파일을 선택하면 이 자리에 표가 나옵니다.</td></tr>
+            <tr><td class="empty" colspan="7">엑셀 파일을 선택하면 이 자리에 표가 나옵니다.</td></tr>
           </tbody>
         </table>
       </div>
@@ -165,6 +165,7 @@
   ];
   let file = null;
   let extractedData = [];
+  let msgMissing = false;
 
   const status = (msg, err) => { const s = $('status'); s.textContent = msg || ''; s.classList.toggle('err', !!err); };
 
@@ -195,6 +196,18 @@
         const worksheet = workbook.Sheets[workbook.SheetNames[0]];
         const range = XLSX.utils.decode_range(worksheet['!ref'] || 'A1');
 
+        // '배송메세지' 열은 제목 행에서 이름으로 찾는다 (위쪽 10행 안)
+        let msgCol = -1;
+        for (let R = range.s.r; R <= Math.min(range.e.r, range.s.r + 9) && msgCol < 0; ++R) {
+          for (let C = range.s.c; C <= range.e.c; ++C) {
+            const h = worksheet[XLSX.utils.encode_cell({ r: R, c: C })];
+            const t = h ? (h.w || h.v || '').toString().trim() : '';
+            if (t === '배송메세지' || t === '배송메시지') { msgCol = C; break; }
+          }
+        }
+        if (msgCol < 0) msgCol = 9; // 제목을 못 찾으면 J열 사용
+        msgMissing = false;
+
         extractedData = [];
         for (let R = range.s.r; R <= range.e.r; ++R) {
           const rowObj = { rowNum: R + 1 };
@@ -205,6 +218,8 @@
             rowObj[col.letter] = val;
             if (val !== '') hasData = true;
           });
+          const mc = msgCol >= 0 ? worksheet[XLSX.utils.encode_cell({ r: R, c: msgCol })] : null;
+          rowObj.M = mc ? (mc.w || mc.v || '').toString().trim() : '';
           if (hasData) extractedData.push(rowObj);
         }
         render();
@@ -223,7 +238,7 @@
     if (!extractedData.length) {
       const tr = document.createElement('tr');
       const td = document.createElement('td');
-      td.className = 'empty'; td.colSpan = 6; td.textContent = '추출할 데이터가 없습니다.';
+      td.className = 'empty'; td.colSpan = 7; td.textContent = '추출할 데이터가 없습니다.';
       tr.appendChild(td); body.appendChild(tr);
       $('summary').textContent = '추출된 행이 없습니다';
       $('copy').disabled = true; $('download').disabled = true;
@@ -236,20 +251,22 @@
       cell(tr, row.B);
       cell(tr, row.G);
       cell(tr, row.I, 'addr');
+      cell(tr, row.M);
       cell(tr, row.D);
       cell(tr, row.F + '개');
       body.appendChild(tr);
     }
     $('summary').innerHTML = '총 <b>' + extractedData.length + '</b>행 추출됨';
     $('copy').disabled = false; $('download').disabled = false;
-    status('완료했습니다.');
+    if (msgMissing) status('완료했습니다. 다만 \'배송메세지\' 제목의 열을 찾지 못해 메세지는 비워 두었습니다.', true);
+    else status('완료했습니다.');
   }
 
   // 탭 구분 텍스트 (첫 행은 제목 행이라 제외)
   function buildText() {
     let t = '';
     extractedData.forEach((row) => {
-      if (row.rowNum > 1) t += row.B + '\t' + row.G + '\n' + row.I + '\n' + row.D + '\t' + row.F + '개\n\n';
+      if (row.rowNum > 1) t += row.B + '\t' + row.G + '\n' + row.I + '\n' + (row.M ? row.M + '\n' : '') + row.D + '\t' + row.F + '개\n\n';
     });
     return t;
   }
@@ -269,7 +286,7 @@
 
   function downloadExcel() {
     if (!extractedData.length) { status('다운로드할 데이터가 없습니다.', true); return; }
-    const rows = extractedData.map((r) => ({ 'B열': r.B, 'G열': r.G, 'I열': r.I, 'D열': r.D, 'F열': r.F }));
+    const rows = extractedData.map((r) => ({ 'B열': r.B, 'G열': r.G, 'I열': r.I, '배송메세지': r.M, 'D열': r.D, 'F열': r.F }));
     const ws = XLSX.utils.json_to_sheet(rows);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, '추출결과');

@@ -116,8 +116,8 @@
 
 <div class="wrap">
   <nav class="nav" aria-label="페이지 이동">
-    <a href="https://suuurini.github.io/naver/" aria-current="page">네이버</a>
-    <a href="https://suuurini.github.io/naver/sagdam.html">사그담</a>
+    <a href="naver.html" aria-current="page">네이버</a>
+    <a href="sagdam.html">사그담</a>
   </nav>
   <h1>발주 수취인 정리</h1>
   <p class="lead">발주발송관리 엑셀에서 수취인명, 상품명, 옵션정보, 수량을 뽑아 수취인별로 묶어줍니다. 파일은 이 브라우저 안에서만 처리되고 어디로도 전송되지 않습니다.</p>
@@ -355,7 +355,7 @@
   }
 
   const WANT = ['수취인명', '상품명', '옵션정보', '수량'];
-  const ALL = WANT.concat(['수취인연락처1', '통합배송지']);
+  const ALL = WANT.concat(['수취인연락처1', '통합배송지', '배송메세지']);
   function extract(sheets) {
     for (const sh of sheets) {
       const hi = sh.rows.findIndex((r) => Object.values(r).some((v) => String(v).trim() === '수취인명'));
@@ -367,7 +367,7 @@
       const items = [];
       for (const r of sh.rows.slice(hi + 1)) {
         const g = (k) => String(r[map[k]] ?? '').trim();
-        const it = { name: g('수취인명'), product: g('상품명'), option: g('옵션정보'), qty: g('수량'), phone: g('수취인연락처1'), addr: g('통합배송지') };
+        const it = { name: g('수취인명'), product: g('상품명'), option: g('옵션정보'), qty: g('수량'), phone: g('수취인연락처1'), addr: g('통합배송지'), msg: g('배송메세지') };
         if (!it.name && !it.product) continue;
         items.push(it);
       }
@@ -385,7 +385,7 @@
     for (const [, list] of groups) {
       const lines = list.map((it) => { total += Number(it.qty) || 0; return [it.product, it.option, q(it.qty)].filter(Boolean).join(' '); });
       const f = list[0];
-      const head = tab === 2 ? [[f.name, f.phone].filter(Boolean).join(' '), f.addr].filter(Boolean).join('\n') : f.name;
+      const head = tab === 2 ? [[f.name, f.phone].filter(Boolean).join(' '), f.addr, [...new Set(list.map((i) => i.msg).filter(Boolean))].join(' / ')].filter(Boolean).join('\n') : f.name;
       blocks.push(head + '\n' + lines.join('\n'));
     }
     return { text: blocks.join('\n\n'), people: groups.size, orders: items.length, total };
@@ -395,7 +395,7 @@
   let file = null, items = null, tab = 1;
   const SAMPLES = {
     1: '홍길동\n샘플 상품 A 옵션: 500g 2개\n샘플 상품 B 옵션: 1kg 1개\n\n김영희\n샘플 상품 A 옵션: 1kg 1개',
-    2: '홍길동 010-0000-0000\n서울특별시 샘플구 예시로 1 101동 101호\n샘플 상품 A 옵션: 500g 2개\n샘플 상품 B 옵션: 1kg 1개\n\n김영희 010-1111-1111\n경기도 샘플시 예시길 2\n샘플 상품 A 옵션: 1kg 1개'
+    2: '홍길동 010-0000-0000\n서울특별시 샘플구 예시로 1 101동 101호\n문 앞에 놓아주세요\n샘플 상품 A 옵션: 500g 2개\n샘플 상품 B 옵션: 1kg 1개\n\n김영희 010-1111-1111\n경기도 샘플시 예시길 2\n샘플 상품 A 옵션: 1kg 1개'
   };
   function showSample() {
     const out = $('out'); out.textContent = SAMPLES[tab]; out.classList.add('sample');
