@@ -1,0 +1,434 @@
+<!doctype html><html lang="ko"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>CJ 출고 준비</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#f3f5f9;color:#182639;font:15px 'Malgun Gothic',sans-serif}main{max-width:1250px;margin:auto;padding:44px 24px}h1{font-size:32px;margin:0 0 8px;letter-spacing:-.06em}p{line-height:1.65}header p,small{color:#546477}section{background:#fff;border:1px solid #dbe2ed;border-radius:16px;padding:20px;margin-top:20px}button,select,input{font:inherit;border:1px solid #b9c7d8;border-radius:8px;padding:8px;background:white;color:inherit}button{cursor:pointer;font-weight:bold}button.primary{background:#154f87;color:white;border-color:#154f87;padding:10px 16px}button:disabled{opacity:.45;cursor:default}.bar{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.end{margin-left:auto}.scroll{overflow:auto}table{width:100%;border-collapse:collapse;min-width:800px}td,th{text-align:left;padding:13px 8px;border-bottom:1px solid #e5eaf0;vertical-align:top}th{background:#edf3f9;white-space:nowrap}td input{width:74px}td select{min-width:105px}td small{display:block;margin-top:5px}strong{font-weight:750}#log{white-space:pre-wrap;color:#334b65}#log:empty{display:none}#dest{font-weight:bold}#files{display:none}
+</style>
+<main><header><h1>CJ 출고 준비</h1><p>주문을 포장하거나 출력된 운송장을 조회하세요.</p></header>
+<nav class="bar" aria-label="작업 선택"><button class="primary" id="packing-tab" aria-pressed="true" aria-controls="packing-panel">출고 준비</button><button id="tracking-tab" aria-pressed="false" aria-controls="tracking-panel">운송장 조회</button></nav>
+<div id="packing-panel">
+<section><div class="bar"><button class="primary" id="pick">주문 폴더 선택</button><button id="reload" disabled>다시 읽기</button><span id="dest">온라인판매자동화 폴더를 선택하세요</span><label class="end">스마트스토어 엑셀 암호 <input id="pw" type="password" value="1111" autocomplete="off" size="8"></label><input id="files" type="file" webkitdirectory multiple></div><p id="log" role="status"></p></section>
+<section><div class="bar"><strong id="summary">출고 검토</strong><label><input id="merge" type="checkbox" checked> 일치하는 수취인 합배송</label><label><input id="include-header" type="checkbox"> 엑셀 제목행 포함</label><button id="download" class="primary end" disabled>CJ 엑셀 다운로드</button></div><p><small>수취인명·주 연락처·주소가 모두 일치하면 합배송 후보로 묶습니다. 주문 상태와 기존 출고 여부를 확인한 뒤 내보낼 묶음을 체크하세요.</small></p>
+<div class="scroll"><table><thead><tr><th><label><input id="select-all" type="checkbox" disabled> 전체</label></th><th>수취인 / 주소</th><th>주문 / 품목</th><th>박스수량</th><th>박스타입</th><th>기본운임 합계</th></tr></thead><tbody id="body"></tbody></table></div></section></div>
+<section id="tracking-panel" hidden>
+<div class="bar"><label>CJ 운송장 출력 엑셀 <input type="file" id="tracking-file" accept=".xlsx,.xls"></label><label class="end">검색 <input type="search" id="tracking-query" placeholder="수취인명 또는 운송장번호" disabled></label></div>
+<p id="tracking-status" role="status">운송장출력데이터 상세 파일을 선택하세요.</p>
+<div class="scroll"><table style="min-width:0"><thead><tr><th>수취인명</th><th>운송장번호</th></tr></thead><tbody id="tracking-body"></tbody></table></div>
+</section></main>
+<script>
+  const enc = new TextEncoder();
+  const concat = (...a) => {
+    let n = 0; for (const x of a) n += x.length;
+    const o = new Uint8Array(n); let p = 0;
+    for (const x of a) { o.set(x, p); p += x.length; }
+    return o;
+  };
+  const u32le = (n) => new Uint8Array([n & 255, (n >> 8) & 255, (n >> 16) & 255, (n >>> 24) & 255]);
+  const b64 = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+  const utf16le = (s) => { const o = new Uint8Array(s.length * 2); for (let i = 0; i < s.length; i++) { const c = s.charCodeAt(i); o[2 * i] = c & 255; o[2 * i + 1] = c >> 8; } return o; };
+  const HASH = { SHA1: 'SHA-1', SHA256: 'SHA-256', SHA384: 'SHA-384', SHA512: 'SHA-512' };
+  const digest = async (alg, d) => new Uint8Array(await crypto.subtle.digest(alg, d));
+  const tick = () => new Promise((r) => setTimeout(r, 0));
+  const eq = (a, b) => a.length === b.length && a.every((v, i) => v === b[i]);
+
+  class UserError extends Error {}
+
+  /* ---------- 암호화된 엑셀(OLE 컨테이너) 읽기 ---------- */
+  function readCFB(buf) {
+    const sig = [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1];
+    if (!sig.every((b, i) => buf[i] === b)) return null;
+    const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+    const ss = 1 << dv.getUint16(0x1E, true);
+    const mss = 1 << dv.getUint16(0x20, true);
+    const dirStart = dv.getUint32(0x30, true);
+    const cutoff = dv.getUint32(0x38, true);
+    const mfStart = dv.getUint32(0x3C, true);
+    const difStart = dv.getUint32(0x44, true);
+    const nDif = dv.getUint32(0x48, true);
+    const END = 0xFFFFFFFA;
+    const sec = (i) => buf.subarray((i + 1) * ss, (i + 2) * ss);
+    const u32s = (bytes) => { const d = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength); const o = []; for (let i = 0; i + 4 <= bytes.length; i += 4) o.push(d.getUint32(i, true)); return o; };
+
+    const fatIds = [];
+    for (let i = 0; i < 109; i++) { const v = dv.getUint32(0x4C + i * 4, true); if (v < END) fatIds.push(v); }
+    let d = difStart;
+    for (let k = 0; k < nDif && d < END; k++) {
+      const s = u32s(sec(d));
+      for (let i = 0; i < s.length - 1; i++) if (s[i] < END) fatIds.push(s[i]);
+      d = s[s.length - 1];
+    }
+    const fat = [];
+    for (const id of fatIds) fat.push(...u32s(sec(id)));
+    const chain = (start, table) => { const out = []; let c = start; while (c < END && out.length <= table.length) { out.push(c); c = table[c]; } return out; };
+    const readChain = (start) => concat(...chain(start, fat).map(sec));
+
+    const dir = readChain(dirStart);
+    const dd = new DataView(dir.buffer, dir.byteOffset, dir.byteLength);
+    const entries = [];
+    for (let o = 0; o + 128 <= dir.length; o += 128) {
+      const nl = dd.getUint16(o + 0x40, true);
+      const name = new TextDecoder('utf-16le').decode(dir.subarray(o, o + Math.max(0, nl - 2)));
+      entries.push({ name, type: dir[o + 0x42], start: dd.getUint32(o + 0x74, true), size: dd.getUint32(o + 0x78, true) });
+    }
+    const root = entries.find((e) => e.type === 5);
+    const mini = root ? readChain(root.start).subarray(0, root.size) : new Uint8Array(0);
+    const miniFat = u32s(readChain(mfStart));
+    return {
+      stream(name) {
+        const e = entries.find((x) => x.name === name && x.type === 2);
+        if (!e) return null;
+        if (e.size < cutoff) {
+          const parts = chain(e.start, miniFat).map((i) => mini.subarray(i * mss, (i + 1) * mss));
+          return concat(...parts).subarray(0, e.size);
+        }
+        return readChain(e.start).subarray(0, e.size);
+      }
+    };
+  }
+
+  // AES-CBC 복호화(패딩 없음). WebCrypto는 PKCS7만 지원하므로 패딩 블록을 하나 덧붙여 우회한다.
+  async function aesCbcDec(ck, iv, data) {
+    const last = data.subarray(data.length - 16);
+    const padBlock = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-CBC', iv: last }, ck, new Uint8Array(0))).subarray(0, 16);
+    return new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-CBC', iv }, ck, concat(data, padBlock)));
+  }
+
+  async function decryptAgile(info, password, onProgress) {
+    const xml = new TextDecoder().decode(info.subarray(8)).replace(/^﻿/, '');
+    const doc = new DOMParser().parseFromString(xml, 'application/xml');
+    const kd = doc.getElementsByTagNameNS('*', 'keyData')[0];
+    const ek = doc.getElementsByTagNameNS('*', 'encryptedKey')[0];
+    if (!kd || !ek) throw new UserError('지원하지 않는 암호화 방식입니다.');
+    const A = (el, n) => el.getAttribute(n);
+    const alg = HASH[A(ek, 'hashAlgorithm')];
+    if (!alg || A(ek, 'cipherAlgorithm') !== 'AES') throw new UserError('지원하지 않는 암호화 방식입니다.');
+    const salt = b64(A(ek, 'saltValue'));
+    const spin = +A(ek, 'spinCount');
+    const keyLen = +A(ek, 'keyBits') / 8;
+    const saltSize = +A(ek, 'saltSize');
+
+    let h = await digest(alg, concat(salt, utf16le(password)));
+    for (let i = 0; i < spin; i++) {
+      h = await digest(alg, concat(u32le(i), h));
+      if (i % 20000 === 0) { onProgress && onProgress(i / spin); await tick(); }
+    }
+    const derive = async (blockKey) => {
+      let k = await digest(alg, concat(h, blockKey));
+      if (k.length < keyLen) k = concat(k, new Uint8Array(keyLen - k.length).fill(0x36));
+      return crypto.subtle.importKey('raw', k.subarray(0, keyLen), 'AES-CBC', false, ['encrypt', 'decrypt']);
+    };
+    const hex = (s) => Uint8Array.from(s.match(/../g).map((x) => parseInt(x, 16)));
+    const kIn = await derive(hex('fea7d2763b4b9e79'));
+    const kVal = await derive(hex('d7aa0f6d3061344e'));
+    const kKey = await derive(hex('146e0be7abacd0d6'));
+    const vIn = await aesCbcDec(kIn, salt, b64(A(ek, 'encryptedVerifierHashInput')));
+    const vVal = await aesCbcDec(kVal, salt, b64(A(ek, 'encryptedVerifierHashValue')));
+    const check = await digest(alg, vIn.subarray(0, saltSize));
+    if (!eq(check, vVal.subarray(0, check.length))) throw new UserError('비밀번호가 맞지 않습니다. 다시 확인해 주세요.');
+    const secret = (await aesCbcDec(kKey, salt, b64(A(ek, 'encryptedKeyValue')))).subarray(0, keyLen);
+    return { secret, kdSalt: b64(A(kd, 'saltValue')), kdAlg: HASH[A(kd, 'hashAlgorithm')], blockSize: +A(kd, 'blockSize') };
+  }
+
+  async function decryptPackage(cfb, password, onProgress) {
+    const info = cfb.stream('EncryptionInfo');
+    const pkg = cfb.stream('EncryptedPackage');
+    if (!info || !pkg) throw new UserError('엑셀 파일 형식이 아닙니다.');
+    const major = info[0] | (info[1] << 8), minor = info[2] | (info[3] << 8);
+    if (!(major === 4 && minor === 4)) throw new UserError('지원하지 않는 암호화 방식입니다. (Excel 2010 이상에서 저장한 파일만 가능)');
+    const { secret, kdSalt, kdAlg, blockSize } = await decryptAgile(info, password, onProgress);
+    const pdv = new DataView(pkg.buffer, pkg.byteOffset, pkg.byteLength);
+    const size = pdv.getUint32(0, true) + pdv.getUint32(4, true) * 4294967296;
+    const data = pkg.subarray(8);
+    const ck = await crypto.subtle.importKey('raw', secret, 'AES-CBC', false, ['encrypt', 'decrypt']);
+    const out = [];
+    for (let i = 0, off = 0; off < data.length; i++, off += 4096) {
+      const seg = data.subarray(off, Math.min(off + 4096, data.length));
+      const iv = (await digest(kdAlg, concat(kdSalt, u32le(i)))).subarray(0, blockSize);
+      out.push(await aesCbcDec(ck, iv, seg));
+    }
+    return concat(...out).subarray(0, size);
+  }
+
+
+const by=id=>document.getElementById(id), str=x=>String(x??'').trim(), decoder=new TextDecoder(), parser=new DOMParser();
+const xml=b=>parser.parseFromString(decoder.decode(b),'application/xml');
+const tags=(el,n)=>Array.from(el.getElementsByTagNameNS('*',n));
+const template='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';
+function little(b){return new DataView(b.buffer,b.byteOffset,b.byteLength)}
+async function unzip(bytes){
+ const v=little(bytes), map=new Map();let e=bytes.length-22;
+ while(e>=Math.max(0,bytes.length-65557)&&v.getUint32(e,true)!==0x06054b50)e--;
+ if(e<Math.max(0,bytes.length-65557))throw Error('xlsx 압축 구조를 읽을 수 없습니다.');
+ let p=v.getUint32(e+16,true);
+ for(let i=0;i<v.getUint16(e+10,true);i++){
+  const length=v.getUint16(p+28,true), name=decoder.decode(bytes.subarray(p+46,p+46+length));
+  const at=v.getUint32(p+42,true), start=at+30+v.getUint16(at+26,true)+v.getUint16(at+28,true);
+  const raw=bytes.subarray(start,start+v.getUint32(p+20,true));
+  const method=v.getUint16(p+10,true);
+  if(method!==0&&method!==8)throw Error('지원하지 않는 압축 형식입니다.');
+  const data=method===0?raw:new Uint8Array(await new Response(new Blob([raw]).stream().pipeThrough(new DecompressionStream('deflate-raw'))).arrayBuffer());
+  map.set(name,data);
+  p+=46+length+v.getUint16(p+30,true)+v.getUint16(p+32,true);
+ }return map;
+}
+function pack(parts){
+ const blocks=[], central=[];let offset=0, size=0;
+ for(const [name,data] of parts){
+  const label=enc.encode(name), h=new Uint8Array(30+label.length), c=new Uint8Array(46+label.length), hv=little(h), cv=little(c);
+  let crc=0xffffffff;
+  for(const b of data){crc^=b;for(let j=0;j<8;j++)crc=(crc>>>1)^((crc&1)?0xedb88320:0)}
+  hv.setUint32(0,0x04034b50,true);hv.setUint16(4,20,true);hv.setUint16(6,2048,true);hv.setUint32(14,~crc,true);hv.setUint32(18,data.length,true);hv.setUint32(22,data.length,true);hv.setUint16(26,label.length,true);h.set(label,30);
+  cv.setUint32(0,0x02014b50,true);cv.setUint16(4,20,true);c.set(h.subarray(4,30),6);cv.setUint32(42,offset,true);c.set(label,46);
+  blocks.push(h,data);central.push(c);offset+=h.length+data.length;size+=c.length;
+ }
+ const e=new Uint8Array(22), v=little(e);v.setUint32(0,0x06054b50,true);v.setUint16(8,parts.size,true);v.setUint16(10,parts.size,true);v.setUint32(12,size,true);v.setUint32(16,offset,true);
+ return new Blob([...blocks,...central,e],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
+}
+function oldExcel(cfb){
+ const w=cfb.stream('Workbook')??cfb.stream('Book');if(!w)throw Error('지원하지 않는 XLS 형식입니다.');
+ function records(start){const out=[],v=little(w);for(let p=start;p+4<=w.length;){const id=v.getUint16(p,true),len=v.getUint16(p+2,true);out.push([id,w.subarray(p+4,p+4+len)]);p+=len+4;if(id===10)break}return out}
+ const global=records(0), strings=[], idx=global.findIndex(([id])=>id===252);
+ if(idx>=0){
+  const chunks=[global[idx][1]];for(let i=idx+1;global[i]?.[0]===60;i++)chunks.push(global[i][1]);
+  let chunk=0,p=8;
+  function take(){if(p>=chunks[chunk].length){chunk++;p=0}return chunks[chunk][p++]}
+  function number(bytes){let x=0;for(let j=0;j<bytes;j++)x+=take()*256**j;return x}
+  for(let i=0,count=little(chunks[0]).getUint32(4,true);i<count;i++){
+   const len=number(2), flags=take(), rich=flags&8?number(2):0, ext=flags&4?number(4):0;
+   let wide=flags&1,s='';
+   for(let j=0;j<len;j++){if(p>=chunks[chunk].length)wide=take()&1;s+=String.fromCharCode(number(wide?2:1))}
+   for(let j=0;j<rich*4+ext;j++)take();strings.push(s);
+  }
+ }
+ function rk(x){const a=new DataView(new ArrayBuffer(8));a.setInt32(4,x&~3,true);return (x&2?x>>2:a.getFloat64(0,true))/(x&1?100:1)}
+ return global.filter(([id])=>id===133).map(([,b])=>{
+  const rows=[];function set(r,c,v){(rows[r]??=[])[c]=str(v)}
+  for(const [id,bytes] of records(little(b).getUint32(0,true))){
+   if(![253,515,638,189].includes(id))continue;
+   const v=little(bytes), r=v.getUint16(0,true), c=v.getUint16(2,true);
+   if(id===189){for(let j=4;j<bytes.length-2;j+=6)set(r,c+(j-4)/6,rk(v.getInt32(j+2,true)));continue}
+   set(r,c,id===253?strings[v.getUint32(6,true)]:id===515?v.getFloat64(6,true):rk(v.getInt32(6,true)));
+  }return rows.filter(Boolean);
+ });
+}
+async function sheets(bytes,password){
+ const cfb=readCFB(bytes);
+ if(cfb){if(!cfb.stream('EncryptedPackage'))return oldExcel(cfb);bytes=await decryptPackage(cfb,password)}
+ const zip=await unzip(bytes), ss=zip.get('xl/sharedStrings.xml');
+ const dict=ss?tags(xml(ss),'si').map(x=>tags(x,'t').map(t=>t.textContent).join('')):[];
+ return [...zip].filter(([k])=>/^xl\/worksheets\/sheet\d+\.xml$/.test(k)).map(([,b])=>tags(xml(b),'row').map(r=>{
+  const row=[];for(const c of tags(r,'c')){
+   const col=[...c.getAttribute('r').replace(/\d+/g,'')].reduce((v,l)=>v*26+l.charCodeAt(0)-64,0)-1;
+   const val=tags(c,'v')[0]?.textContent??'';
+   row[col]=str(c.getAttribute('t')==='s'?dict[Number(val)]:c.getAttribute('t')==='inlineStr'?tags(c,'t').map(t=>t.textContent).join(''):val);
+  }return row;
+ }));
+}
+const norm=v=>str(v).replace(/[\s()]/g,'');
+const schemas=[
+ {name:'스마트스토어',detect:['상품주문번호','수취인명'],id:['상품주문번호'],recipient:['수취인명'],phone:['수취인연락처1'],phone2:['수취인연락처2'],addr:['통합배송지'],product:['상품명'],option:['옵션정보'],qty:['수량']},
+ {name:'쿠팡',detect:['수취인이름','등록상품명'],id:['주문번호'],recipient:['수취인이름'],phone:['수취인전화번호'],addr:['수취인 주소'],product:['등록상품명'],option:['등록옵션명'],qty:['구매수(수량)']},
+ {name:'사그담',detect:['수취인명','수취인전화번호1','배송지'],id:['주문번호','쇼핑물주문번호'],recipient:['수취인명'],phone:['수취인전화번호1'],phone2:['수취인전화번호2'],addr:['배송지'],product:['상품명'],option:['옵션'],qty:['수량']},
+ {name:'카페24',detect:['주문번호'],id:['품목별 주문번호','주문번호'],recipient:['수령인','수령인명','수취인명','배송 받는 사람','받는분'],phone:['수령인 휴대전화','수령인 휴대폰','수령인휴대전화번호','수취인 휴대전화','수령인 전화번호'],phone2:['수령인 전화'],addr:['수령인 주소','수령인 전체 주소','전체 배송지','배송지 주소','수령인 기본 주소'],product:['상품명','주문상품명'],option:['옵션','옵션명'],qty:['수량','주문수량']}
+];
+function extract(sheet){
+ const h=sheet.findIndex(row=>schemas.some(s=>matches(row,s)));
+ if(h<0)return null;
+ const header=sheet[h].map(norm), schema=schemas.find(s=>matches(sheet[h],s));
+ return {channel:schema.name,rows:sheet.slice(h+1).flatMap(row=>{
+  function get(keys=[]){for(const k of keys){const v=str(row[header.indexOf(norm(k))]);if(v)return v}return ''}
+  const id=get(schema.id);if(!id)return [];
+  const status=get(['주문상태','배송상태','주문상태(한글)']), tracking=get(['운송장번호','송장번호']);
+  if(tracking||get(['출고일(발송일)','발송처리일'])||/취소|배송중|배송완료|반품|환불/.test(status))return [];
+  const addr=get(schema.addr)||[get(['기본배송지','수령인 기본주소']),get(['상세배송지','수령인 상세주소'])].filter(Boolean).join(' ');
+  const detail=get(['수령인 상세주소']);const address=schema.name==='카페24'&&detail&&!addr.includes(detail)?[addr,detail].filter(Boolean).join(' '):addr;
+  const postcode=get(['받는분우편번호','수령인 우편번호','우편번호']);
+  const review=schema.name==='사그담'?'기존 출고 확인':schema.name==='스마트스토어'&&!get(['발주확인일'])?'발주확인 여부 확인':'';
+  return [{channel:schema.name,id,recipient:get(schema.recipient),phone:get(schema.phone),phone2:get(schema.phone2),address,postcode:/^\d{1,4}$/.test(postcode)?postcode.padStart(5,'0'):postcode,product:get(schema.product),option:get(schema.option),qty:get(schema.qty),memo:get(['배송메세지','배송메시지','배송 메모']),review}];
+ })};
+}
+function matches(row,s){const head=row.map(norm);return s.detect.every(k=>head.includes(norm(k)))&&s.recipient.some(k=>head.includes(norm(k)))}
+const types=[['극소','1',3500],['소','2',3600],['중','3',4400],['대1','4',5450],['대2','7',6000],['이형','',12900],['취급제한','',16850]];
+const money=x=>x.toLocaleString('ko-KR')+'원';
+let orders=[], groups=[], selectedFiles=[], busy=false;
+const missing=o=>!o.recipient||!o.phone||!o.address||!o.product;
+const item=o=>[o.product,o.option].filter(Boolean).join(' / ')+(o.qty?' × '+o.qty:'');
+function groupRows(){
+ const map=new Map();
+ for(const o of orders){
+  const key=by('merge').checked&&!missing(o)?JSON.stringify([norm(o.recipient),o.phone.replace(/\D/g,''),norm(o.address),o.postcode]):o.key;
+  if(!map.has(key))map.set(key,[]);map.get(key).push(o);
+ }groups=[...map.values()].map(newGroup);
+ render();
+}
+function newGroup(rows){
+ return {rows,count:1,type:types[0],code:types[0][1],included:!rows.some(missing)};
+}
+function el(tag,text,parent){const e=document.createElement(tag);if(text)e.textContent=text;parent?.append(e);return e}
+function sync(){
+ const checked=groups.filter(g=>g.included);
+ const eligible=groups.filter(g=>!g.rows.some(missing));
+ const all=by('select-all');
+ all.disabled=busy||!eligible.length;
+ all.checked=eligible.length>0&&eligible.every(g=>g.included);
+ all.indeterminate=!all.checked&&eligible.some(g=>g.included);
+ by('summary').textContent=orders.length+'주문 · '+groups.length+'묶음 · '+checked.length+'선택';
+ by('download').disabled=busy||!checked.length||checked.some(g=>!g.type||!g.code||!Number.isInteger(g.count)||g.count<1||g.count>999||g.rows.some(missing));
+}
+function render(){
+ const body=by('body');body.replaceChildren();
+ for(const g of groups){
+  const r=el('tr','',body), first=g.rows[0], box=el('input','',el('td','',r));box.type='checkbox';box.checked=g.included;box.disabled=g.rows.some(missing);
+  box.setAttribute('aria-label',first.recipient+' 내보내기');box.onchange=()=>{g.included=box.checked;sync()};
+  const addr=el('td','',r);el('strong',first.recipient||'수취인 누락',addr);el('small',first.address||'주소 누락',addr);el('small',first.phone||'연락처 누락',addr);
+  const info=el('td','',r);
+  if(g.rows.length>1){const split=el('button','이 묶음 분리',info);split.onclick=()=>{groups.splice(groups.indexOf(g),1,...g.rows.map(row=>newGroup([row])));render()}}
+  for(const o of g.rows){el('div',o.channel+' · '+item(o),info);el('small',[o.id,o.review,o.memo].filter(Boolean).join(' · '),info)}
+  const count=el('input','',el('td','',r));count.type='number';count.min=1;count.max=999;count.value=g.count;count.setAttribute('aria-label','박스수량');
+  const cell=el('td','',r), select=el('select','',cell);select.setAttribute('aria-label','박스타입');el('option','선택',select).value='';
+  for(const [i,t] of types.entries())el('option',t[0]+' '+money(t[2]),select).value=i;
+  if(g.type)select.value=types.indexOf(g.type);
+  const code=el('input','',cell);code.placeholder='CJ 코드';code.setAttribute('aria-label','CJ 박스코드');code.maxLength=4;code.value=g.code;code.hidden=!g.type||!!g.type[1];
+  const total=el('td','',r);
+  function update(){total.textContent=g.type&&g.count>0?money(g.type[2]*g.count):'—';sync()}
+  count.oninput=()=>{g.count=count.valueAsNumber;update()};select.onchange=()=>{g.type=select.value===''?null:types[select.value];g.code=g.type?.[1]||'';code.value=g.code;code.hidden=!g.type||!!g.type[1];update()};code.oninput=()=>{g.code=str(code.value);sync()};update();
+ }
+ sync();
+}
+async function load(files){
+ busy=true;orders=[];groups=[];render();by('reload').disabled=true;
+ const lines=[], unique=new Map(), conflicts=new Set();let dup=0;
+ const candidates=files.filter(f=>/\.xlsx?$/i.test(f.name)&&!/^~\$|^CJ_/i.test(f.name));
+ for(const f of candidates){
+  by('log').textContent='읽는 중 · '+f.name;
+  try{
+   const results=(await sheets(new Uint8Array(await f.arrayBuffer()),by('pw').value)).map(extract).filter(Boolean);
+   if(!results.length){lines.push(f.name+' · 해당 주문 양식을 찾지 못함');continue}
+   const rows=results.flatMap(x=>x.rows);
+   lines.push(f.name+' · '+rows.length+'행');
+   for(const o of rows){
+    const key=JSON.stringify([o.channel,o.id,o.product,o.option,o.qty]);
+    if(unique.has(key)){dup++;if(JSON.stringify(unique.get(key))!==JSON.stringify(o))conflicts.add(key);continue}
+    unique.set(key,o);
+   }
+  }catch(e){lines.push(f.name+' · '+e.message)}
+ }
+ orders=[...unique].filter(([key])=>!conflicts.has(key)).map(([key,o])=>({...o,key}));
+ if(dup)lines.push('중복 주문행 '+dup+'건 제외');if(conflicts.size)lines.push('내용이 다른 중복 '+conflicts.size+'건은 원본 확인 필요');
+ by('log').textContent=lines.join('\n')||'읽을 수 있는 주문 엑셀 파일이 없습니다.';
+ busy=false;by('reload').disabled=false;groupRows();
+}
+let handle=null;
+async function readFolder(h){
+ const found=[];for await(const entry of h.values())if(entry.kind==='file')found.push(await entry.getFile());
+ selectedFiles=found;await load(found);
+}
+by('pick').onclick=async()=>{
+ if(window.showDirectoryPicker){
+  try{handle=await window.showDirectoryPicker({id:'shipping-orders',mode:'read'});by('dest').textContent=handle.name;await readFolder(handle);return}catch(e){if(e.name==='AbortError')return}
+ }
+ by('files').click();
+};
+by('files').onchange=e=>{handle=null;selectedFiles=[...e.target.files];if(!selectedFiles.length)return;by('dest').textContent=selectedFiles[0].webkitRelativePath.split('/')[0];load(selectedFiles);e.target.value=''};
+by('reload').onclick=()=>handle?readFolder(handle):by('files').click();
+by('merge').onchange=groupRows;
+by('select-all').onchange=event=>{
+ for(const g of groups)g.included=event.target.checked&&!g.rows.some(missing);
+ render();
+};
+async function output(groups, includeHeader){
+ const parts=await unzip(b64(template)), key='xl/worksheets/sheet1.xml', doc=xml(parts.get(key)), ns=doc.documentElement.namespaceURI, data=tags(doc,'sheetData')[0];
+ if(!includeHeader)data.removeChild(tags(data,'row')[0]);
+ const firstRow=includeHeader?2:1;
+ const trace=[];
+ for(const [i,g] of groups.entries()){
+  const f=g.rows[0], n=i+firstRow, shipment=g.rows.length===1?f.id:'CJ-'+Date.now()+'-'+(i+1);
+  const memo=[...new Set(g.rows.map(o=>o.memo).filter(Boolean))];
+  const fields={C:f.recipient,D:f.phone,E:f.phone2,F:f.postcode,G:f.address,I:shipment,J:g.rows.map(item).join(' / '),K:g.count,L:g.code,M:g.type[2]*g.count,N:memo.join(' / ')};
+  const row=doc.createElementNS(ns,'row');row.setAttribute('r',n);
+  for(const [col,value] of Object.entries(fields)){if(value==='')continue;
+   const c=doc.createElementNS(ns,'c');c.setAttribute('r',col+n);
+   if(col==='K'||col==='M'){const v=doc.createElementNS(ns,'v');v.textContent=value;c.append(v)}
+   else{c.setAttribute('t','inlineStr');const a=doc.createElementNS(ns,'is'),t=doc.createElementNS(ns,'t');t.textContent=value;a.append(t);c.append(a)}
+   row.append(c);
+  }data.append(row);
+  for(const o of g.rows)trace.push([shipment,o.channel,o.id]);
+ }
+ tags(doc,'dimension')[0].setAttribute('ref','A1:Q'+(groups.length+firstRow-1));
+ parts.set(key,enc.encode(new XMLSerializer().serializeToString(doc)));
+ return {blob:pack(parts),trace};
+}
+function save(blob,name){const a=document.createElement('a'),url=URL.createObjectURL(blob);a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),10000)}
+by('download').onclick=async()=>{
+ const list=groups.filter(g=>g.included);if(by('download').disabled)return;
+ busy=true;sync();
+ try{
+  const {blob,trace}=await output(list,by('include-header').checked), stamp=new Date().toISOString().replace(/\D/g,'').slice(0,14), name='CJ_'+stamp+'.xlsx';
+  save(blob,name);
+  const csv=[['CJ 고객주문번호','판매채널','원본 주문번호'],...trace].map(row=>row.map(v=>'"'+String(v).replace(/"/g,'""')+'"').join(',')).join('\r\n');
+  const line=el('p',name+' 다운로드 요청 완료 · '+list.length+'묶음 ',by('log'));const link=el('button','주문번호 매핑 CSV 저장',line);
+  link.onclick=()=>save(new Blob(['\ufeff',csv],{type:'text/csv;charset=utf-8'}),'CJ_'+stamp+'_mapping.csv');
+ }catch(e){by('log').textContent='엑셀 생성 실패 · '+e.message}finally{busy=false;sync()}
+};
+const packingTab=by('packing-tab'), trackingTab=by('tracking-tab');
+function showTracking(active){
+ by('packing-panel').hidden=active;
+ by('tracking-panel').hidden=!active;
+ packingTab.setAttribute('aria-pressed',String(!active));
+ trackingTab.setAttribute('aria-pressed',String(active));
+ packingTab.classList.toggle('primary',!active);
+ trackingTab.classList.toggle('primary',active);
+}
+packingTab.onclick=()=>showTracking(false);
+trackingTab.onclick=()=>showTracking(true);
+
+function trackingRows(workbook){
+ const result=[];
+ let recognized=false;
+ for(const sheet of workbook){
+  const headers=sheet.map(row=>row.map(norm));
+  const nameLabels=['받는분명','받는분성명','수취인명','수취인이름'];
+  const numberLabels=['운송장번호','송장번호'];
+  const index=headers.findIndex(row=>row.some(v=>nameLabels.includes(v))&&row.some(v=>numberLabels.includes(v)));
+  if(index<0)continue;
+  recognized=true;
+  const name=headers[index].findIndex(v=>nameLabels.includes(v));
+  const number=headers[index].findIndex(v=>numberLabels.includes(v));
+  for(const row of sheet.slice(index+1)){
+   const recipient=str(row[name]), tracking=str(row[number]);
+   if((recipient||tracking)&&!nameLabels.includes(norm(recipient))&&!numberLabels.includes(norm(tracking)))result.push({recipient,tracking});
+  }
+ }
+ if(!recognized)throw Error('받는분명과 운송장번호 열을 찾지 못했습니다.');
+ return result;
+}
+let trackingResults=[];
+const trackingInput=by('tracking-file'), trackingQuery=by('tracking-query'), trackingStatus=by('tracking-status'), trackingBody=by('tracking-body');
+function renderTracking(){
+ const query=norm(trackingQuery.value).toLowerCase();
+ const matches=trackingResults.filter(row=>norm(row.recipient).toLowerCase().includes(query)||norm(row.tracking).replace(/-/g,'').toLowerCase().includes(query.replace(/-/g,'')));
+ trackingBody.replaceChildren();
+ for(const row of matches){
+  const tr=el('tr','',trackingBody);
+  el('td',row.recipient||'수취인명 없음',tr);
+  el('td',row.tracking||'운송장번호 없음',tr);
+ }
+ const missingNumbers=trackingResults.filter(row=>!row.tracking).length;
+ trackingStatus.textContent='총 '+trackingResults.length+'행 · 표시 '+matches.length+'행'+(missingNumbers?' · 번호 없음 '+missingNumbers+'행':'');
+}
+trackingQuery.oninput=renderTracking;
+trackingInput.onchange=async()=>{
+ const file=trackingInput.files[0];
+ if(!file)return;
+ trackingInput.disabled=true;
+ trackingQuery.disabled=true;
+ trackingQuery.value='';
+ trackingResults=[];
+ trackingBody.replaceChildren();
+ trackingStatus.textContent='파일 읽는 중 · '+file.name;
+ try{
+  trackingResults=trackingRows(await sheets(new Uint8Array(await file.arrayBuffer()),''));
+  trackingQuery.disabled=!trackingResults.length;
+  renderTracking();
+ }catch(error){trackingStatus.textContent=error.message}
+ finally{trackingInput.disabled=false;trackingInput.value=''}
+};
+</script></html>
