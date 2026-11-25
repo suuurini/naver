@@ -9,8 +9,8 @@
 <section><div class="bar"><strong id="summary">출고 검토</strong><label><input id="merge" type="checkbox" checked> 일치하는 수취인 합배송</label><label><input id="include-header" type="checkbox"> 엑셀 제목행 포함</label><button id="download" class="primary end" disabled>CJ 엑셀 다운로드</button></div><p><small>수취인명·주 연락처·주소가 모두 일치하면 합배송 후보로 묶습니다. 주문 상태와 기존 출고 여부를 확인한 뒤 내보낼 묶음을 체크하세요.</small></p>
 <div class="scroll"><table><thead><tr><th><label><input id="select-all" type="checkbox" disabled> 전체</label></th><th>수취인 / 주소</th><th>주문 / 품목</th><th>박스수량</th><th>박스타입</th><th>기본운임 합계</th></tr></thead><tbody id="body"></tbody></table></div></section></div>
 <section id="tracking-panel" hidden>
-<div class="bar"><label>CJ 운송장 출력 엑셀 <input type="file" id="tracking-file" accept=".xlsx,.xls"></label><label class="end">검색 <input type="search" id="tracking-query" placeholder="수취인명 또는 운송장번호" disabled></label></div>
-<p id="tracking-status" role="status">운송장출력데이터 상세 파일을 선택하세요.</p>
+<div class="bar"><label>CJ 파일접수 상세내역 또는 운송장 출력 엑셀 <input type="file" id="tracking-file" accept=".xlsx,.xls"></label><label class="end">검색 <input type="search" id="tracking-query" placeholder="수취인명 또는 운송장번호" disabled></label></div>
+<p id="tracking-status" role="status">파일접수 상세내역 또는 운송장출력데이터 상세 엑셀을 선택하세요.</p>
 <div class="scroll"><table style="min-width:0"><thead><tr><th>수취인명</th><th>운송장번호</th></tr></thead><tbody id="tracking-body"></tbody></table></div>
 </section></main>
 <script>
@@ -385,7 +385,7 @@ function trackingRows(workbook){
  let recognized=false;
  for(const sheet of workbook){
   const headers=sheet.map(row=>row.map(norm));
-  const nameLabels=['받는분명','받는분성명','수취인명','수취인이름'];
+  const nameLabels=['받는분','받는분명','받는분성명','수취인명','수취인이름'];
   const numberLabels=['운송장번호','송장번호'];
   const index=headers.findIndex(row=>row.some(v=>nameLabels.includes(v))&&row.some(v=>numberLabels.includes(v)));
   if(index<0)continue;
@@ -397,7 +397,7 @@ function trackingRows(workbook){
    if((recipient||tracking)&&!nameLabels.includes(norm(recipient))&&!numberLabels.includes(norm(tracking)))result.push({recipient,tracking});
   }
  }
- if(!recognized)throw Error('받는분명과 운송장번호 열을 찾지 못했습니다.');
+ if(!recognized)throw Error('수취인명(받는분)과 운송장번호 열을 찾지 못했습니다.');
  return result;
 }
 let trackingResults=[];
@@ -409,7 +409,28 @@ function renderTracking(){
  for(const row of matches){
   const tr=el('tr','',trackingBody);
   el('td',row.recipient||'수취인명 없음',tr);
-  el('td',row.tracking||'운송장번호 없음',tr);
+  const cell=el('td','',tr);
+  const number=el('span',row.tracking||'운송장번호 없음',cell);
+  if(row.tracking){
+   cell.append(' ');
+   const button=el('button','복사',cell);
+   button.setAttribute('aria-label',(row.recipient||'해당 행')+' 운송장번호 복사');
+   button.onclick=async()=>{
+    try{
+     await navigator.clipboard.writeText(row.tracking);
+     button.textContent='복사됨';
+    }catch{
+     const selection=window.getSelection();
+     const range=document.createRange();
+     range.selectNodeContents(number);
+     selection.removeAllRanges();
+     selection.addRange(range);
+     let copied=false;
+     try{copied=document.execCommand('copy')}catch{}
+     button.textContent=copied?'복사됨':'Ctrl+C로 복사';
+    }
+   };
+  }
  }
  const missingNumbers=trackingResults.filter(row=>!row.tracking).length;
  trackingStatus.textContent='총 '+trackingResults.length+'행 · 표시 '+matches.length+'행'+(missingNumbers?' · 번호 없음 '+missingNumbers+'행':'');
